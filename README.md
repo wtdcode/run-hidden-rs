@@ -51,9 +51,19 @@ launched.
 
 ## Notes
 
-- The hidden-window behavior (`CREATE_NO_WINDOW`) only applies on Windows. On
-  other platforms the program simply runs as a normal child — the stdio
-  forwarding/redirection and child-cleanup behaviors work everywhere.
+- On Windows the executable is built for the **GUI subsystem**
+  (`#![windows_subsystem = "windows"]`, like the original's `wWinMain`), so
+  launching it never creates a console window — no "black box" flashes, even
+  from Explorer, a shortcut, or Task Scheduler. The child is in turn launched
+  with `CREATE_NO_WINDOW`.
+- Because a GUI-subsystem process has no console of its own, **forwarded**
+  stdout/stderr only appear when you launch it from an existing terminal (it
+  reattaches to the parent console via `AttachConsole`). When it is launched
+  windowless, forwarded output has nowhere to go — use `--stdout-path` /
+  `--stderr-path` to capture it to files instead. File redirection always works.
+- The hidden-window behavior only applies on Windows. On other platforms the
+  program simply runs as a normal child — the stdio forwarding/redirection and
+  child-cleanup behaviors work everywhere.
 - Prebuilt Windows binaries are attached to each tagged
   [release](https://github.com/wtdcode/run-hidden-rs/releases); every push is
   also built on Windows by CI.

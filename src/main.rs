@@ -17,6 +17,12 @@
 //! single string and split on spaces, so arguments containing spaces, quotes or
 //! anything else survive untouched.
 
+// Build as a GUI-subsystem app on Windows (like the original's `wWinMain`). A
+// console-subsystem exe makes Windows *create* a console window whenever it is
+// launched without one (Explorer, Task Scheduler, a shortcut) — that's the
+// "black box". The GUI subsystem never gets a console, so no window ever flashes.
+#![windows_subsystem = "windows"]
+
 use std::env;
 use std::ffi::OsString;
 use std::fs::File;
@@ -60,6 +66,13 @@ struct Cli {
 }
 
 fn main() {
+    // As a GUI-subsystem app we have no console of our own. If we *were* launched
+    // from one (e.g. cmd.exe), reattach to it so the output we forward is visible.
+    // This only ever attaches to an existing parent console — it never creates a
+    // new window — so the "no black box" guarantee holds either way.
+    #[cfg(windows)]
+    attach_parent_console();
+
     // Split argv at the first `--`: the part before it is ours to parse, the
     // part after it is the command to launch (forwarded verbatim). clap never
     // sees the child's arguments, so the child's own flags can't collide with
@@ -219,6 +232,20 @@ fn configure_output(
             };
             Ok(true)
         }
+    }
+}
+
+/// Reattach to the parent process's console, if it has one, so output we forward
+/// to our own stdout/stderr is visible when launched from a terminal. Attaching
+/// to an existing console never creates a window; if there is no parent console
+/// the call simply fails and we stay window-less.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: AttachConsole has no preconditions; it returns 0 when there is no
+    // parent console, which we intentionally ignore.
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
     }
 }
 
