@@ -147,6 +147,17 @@ fn run(cli: Cli, command: &[OsString]) -> i32 {
         }
     };
 
+    // Tie the child's lifetime to ours at the kernel level. This is what saves us
+    // when we are *hard*-killed (e.g. Task Scheduler's "End", which calls
+    // TerminateProcess — no signal, no cleanup, so the handler below never runs).
+    #[cfg(windows)]
+    if let Err(reason) = confine_child_to_job(child.id()) {
+        eprintln!(
+            "run-hidden-rs: warning: could not confine child to a job ({reason}); \
+             it may outlive a forced kill of this process"
+        );
+    }
+
     // Make sure the child dies if we are terminated. `ctrlc` runs this handler
     // on its own dedicated thread, so calling `kill()` here is safe even though
     // the main thread is parked in `wait()`. With the `termination` feature this
@@ -233,6 +244,69 @@ fn configure_output(
             Ok(true)
         }
     }
+}
+
+/// Confine the child to a Windows Job Object set to kill every process in it once
+/// the last handle to the job is closed. We hold that one handle for our entire
+/// lifetime and never close it, so when *we* go away — by any means, including a
+/// hard `TerminateProcess` that runs no cleanup and delivers no signal (Task
+/// Scheduler's "End") — the kernel closes the handle for us and tears the child
+/// (and any descendants it spawned) down. This is the only mechanism that
+/// survives a no-cleanup kill; signal handlers cannot.
+#[cfg(windows)]
+fn confine_child_to_job(pid: u32) -> Result<(), &'static str> {
+    use core::ffi::c_void;
+    use core::ptr;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+
+    // SAFETY: plain FFI into kernel32; every returned handle is checked before
+    // use, and each transient handle is closed on every path.
+    unsafe {
+        let job = CreateJobObjectW(ptr::null(), ptr::null());
+        if job.is_null() {
+            return Err("CreateJobObjectW failed");
+        }
+
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = core::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const c_void,
+            core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) == 0
+        {
+            CloseHandle(job);
+            return Err("SetInformationJobObject failed");
+        }
+
+        // We created the child, so we may open it for the rights AssignProcess
+        // needs (set quota + terminate).
+        let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+        if process.is_null() {
+            CloseHandle(job);
+            return Err("OpenProcess failed");
+        }
+
+        let assigned = AssignProcessToJobObject(job, process);
+        CloseHandle(process);
+        if assigned == 0 {
+            CloseHandle(job);
+            return Err("AssignProcessToJobObject failed");
+        }
+
+        // Deliberately leak `job`: it must stay open for the rest of our life so
+        // that *our* death is what closes it and triggers the kill.
+    }
+    Ok(())
 }
 
 /// Reattach to the parent process's console, if it has one, so output we forward

@@ -10,8 +10,11 @@ On top of the original's behavior it adds:
   `--stdout-path` / `--stderr-path` it is written straight to those files
   instead, and `--stdin-path` feeds the child's stdin from a file.
 - **child cleanup on exit** — a cross-platform signal handler (Ctrl-C, SIGTERM,
-  SIGHUP, console-close, ...) kills the child before we go, so nothing is left
-  orphaned.
+  SIGHUP, console-close, ...) kills the child before we go. On Windows the child
+  is additionally placed in a **Job Object** with `KILL_ON_JOB_CLOSE`, so even a
+  hard kill that runs no cleanup — such as **Task Scheduler's "End Task"**, which
+  calls `TerminateProcess` and delivers no signal — still takes the child (and
+  its descendants) down with us, kernel-enforced. Nothing is left orphaned.
 - **verbatim argv forwarding** — everything after `--` is passed straight to the
   child. Arguments are never joined into one string and split on spaces, so
   arguments containing spaces, quotes, or anything else survive untouched.
